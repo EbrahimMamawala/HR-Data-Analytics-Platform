@@ -1,5 +1,4 @@
 import os
-import psycopg2
 import mysql.connector
 from faker import Faker
 import random
@@ -10,28 +9,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --------------------------------------------------------------------
-# 1. Connect to Postgres (SuccessFactorsDB) to fetch existing employees
+# 1. Connect to MySQL (SuccessFactorsDB) to fetch existing employees
 # --------------------------------------------------------------------
-pg_db = os.getenv("DB_NAME")
-pg_user = os.getenv("DB_USER")
-pg_password = os.getenv("DB_PASSWORD")
-pg_host = os.getenv("DB_HOST")
-pg_port = int(os.getenv("PG_PORT"))
+mysql_host = os.getenv("MYSQL_HOST")
+mysql_user = os.getenv("MYSQL_USER")
+mysql_password = os.getenv("MYSQL_PASSWORD")
+mysql_auth_plugin = os.getenv("MYSQL_AUTH_PLUGIN")
+mysql_successfactors_db = os.getenv("MYSQL_SUCCESSFACTORS_DATABASE")
 
-pg_conn = psycopg2.connect(
-    dbname=pg_db,
-    user=pg_user,
-    password=pg_password,
-    host=pg_host,
-    port=pg_port
+sf_conn = mysql.connector.connect(
+    host=mysql_host,
+    user=mysql_user,
+    password=mysql_password,
+    database=mysql_successfactors_db,
+    auth_plugin=mysql_auth_plugin
 )
-pg_cur = pg_conn.cursor()
+sf_cur = sf_conn.cursor()
 
 # Retrieve all EmployeeIDs from the SuccessFactorsDB
-pg_cur.execute("SELECT EmployeeID FROM Employee;")
-employee_rows = pg_cur.fetchall()
-pg_cur.close()
-pg_conn.close()
+sf_cur.execute("SELECT EmployeeID FROM Employee;")
+employee_rows = sf_cur.fetchall()
+sf_cur.close()
+sf_conn.close()
 
 # Build a list of valid EmployeeIDs
 employee_ids = [row[0] for row in employee_rows]
@@ -41,26 +40,21 @@ if not employee_ids:
 # --------------------------------------------------------------------
 # 2. Connect to MySQL (TimeAndAttendanceDB) and create tables
 # --------------------------------------------------------------------
-mysql_host = os.getenv("MYSQL_HOST")
-mysql_user = os.getenv("MYSQL_USER")
-mysql_password = os.getenv("MYSQL_PASSWORD")
-mysql_database = os.getenv("MYSQL_DATABASE")
-mysql_auth_plugin = os.getenv("MYSQL_AUTH_PLUGIN")
-
-mysql_conn = mysql.connector.connect(
+mysql_timeattendance_db = os.getenv("MYSQL_TIMEATTENDANCE_DATABASE")
+ta_conn = mysql.connector.connect(
     host=mysql_host,
     user=mysql_user,
     password=mysql_password,
-    database=mysql_database,
+    database=mysql_timeattendance_db,
     auth_plugin=mysql_auth_plugin
 )
-mysql_cur = mysql_conn.cursor()
+ta_cur = ta_conn.cursor()
 
 # Optional: Drop tables if you want to start clean
 tables_to_drop = ["OvertimeRecords", "ShiftSchedules", "LeaveRecords", "AttendanceRecords"]
 for tbl in tables_to_drop:
     drop_sql = f"DROP TABLE IF EXISTS {tbl};"
-    mysql_cur.execute(drop_sql)
+    ta_cur.execute(drop_sql)
 
 # Create AttendanceRecords table
 attendance_table_sql = """
@@ -78,7 +72,7 @@ CREATE TABLE IF NOT EXISTS AttendanceRecords (
     UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 """
-mysql_cur.execute(attendance_table_sql)
+ta_cur.execute(attendance_table_sql)
 
 # Create LeaveRecords table
 leave_table_sql = """
@@ -95,7 +89,7 @@ CREATE TABLE IF NOT EXISTS LeaveRecords (
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 """
-mysql_cur.execute(leave_table_sql)
+ta_cur.execute(leave_table_sql)
 
 # Create ShiftSchedules table
 shift_table_sql = """
@@ -109,7 +103,7 @@ CREATE TABLE IF NOT EXISTS ShiftSchedules (
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 """
-mysql_cur.execute(shift_table_sql)
+ta_cur.execute(shift_table_sql)
 
 # Create OvertimeRecords table
 overtime_table_sql = """
@@ -122,9 +116,9 @@ CREATE TABLE IF NOT EXISTS OvertimeRecords (
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 """
-mysql_cur.execute(overtime_table_sql)
+ta_cur.execute(overtime_table_sql)
 
-mysql_conn.commit()
+ta_conn.commit()
 
 # --------------------------------------------------------------------
 # 3. Generate 10,000 rows of data per table
@@ -192,8 +186,8 @@ INSERT INTO AttendanceRecords
 (EmployeeID, AttendanceDate, ClockIn, ClockOut, BreakDuration, LateBy, EarlyBy, Notes)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 """
-mysql_cur.executemany(attendance_insert_sql, attendance_data)
-mysql_conn.commit()
+ta_cur.executemany(attendance_insert_sql, attendance_data)
+ta_conn.commit()
 
 # -----------------------------
 # 3B. Generate LeaveRecords data
@@ -229,8 +223,8 @@ INSERT INTO LeaveRecords
 (EmployeeID, LeaveType, StartDate, EndDate, TotalDays, Status, Reason, ApprovedBy)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 """
-mysql_cur.executemany(leave_insert_sql, leave_data)
-mysql_conn.commit()
+ta_cur.executemany(leave_insert_sql, leave_data)
+ta_conn.commit()
 
 # --------------------------------
 # 3C. Generate ShiftSchedules data
@@ -269,8 +263,8 @@ INSERT INTO ShiftSchedules
 (EmployeeID, ShiftDate, ScheduledIn, ScheduledOut, ShiftType)
 VALUES (%s, %s, %s, %s, %s)
 """
-mysql_cur.executemany(shift_insert_sql, shift_data)
-mysql_conn.commit()
+ta_cur.executemany(shift_insert_sql, shift_data)
+ta_conn.commit()
 
 # ---------------------------------
 # 3D. Generate OvertimeRecords data
@@ -294,13 +288,13 @@ INSERT INTO OvertimeRecords
 (EmployeeID, OvertimeDate, OvertimeHours, ApprovedBy)
 VALUES (%s, %s, %s, %s)
 """
-mysql_cur.executemany(overtime_insert_sql, overtime_data)
-mysql_conn.commit()
+ta_cur.executemany(overtime_insert_sql, overtime_data)
+ta_conn.commit()
 
 # --------------------------------------------------------------------
 # 4. Close MySQL connection
 # --------------------------------------------------------------------
-mysql_cur.close()
-mysql_conn.close()
+ta_cur.close()
+ta_conn.close()
 
 print("Data generation complete. 10,000 rows inserted into each table in TimeAndAttendanceDB!")

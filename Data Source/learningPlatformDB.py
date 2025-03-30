@@ -1,37 +1,39 @@
 import os
-import psycopg2
-from faker import Faker
 import random
 import datetime
+import uuid
+import json
+from faker import Faker
 from pymongo import MongoClient
+import mysql.connector
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
 # -----------------------------------------------------------
-# 1. Connect to Postgres (SuccessFactorsDB) to fetch employees
+# 1. Connect to MySQL (SuccessFactorsDB) to fetch employees
 # -----------------------------------------------------------
-pg_db = os.getenv("DB_NAME")
-pg_user = os.getenv("DB_USER")
-pg_password = os.getenv("DB_PASSWORD")
-pg_host = os.getenv("DB_HOST")
-pg_port = int(os.getenv("PG_PORT"))  # You can add PG_PORT to your .env if needed
+mysql_host = os.getenv("MYSQL_HOST")
+mysql_user = os.getenv("MYSQL_USER")
+mysql_password = os.getenv("MYSQL_PASSWORD")
+mysql_successfactors_db = os.getenv("MYSQL_SUCCESSFACTORS_DATABASE")
+mysql_auth_plugin = os.getenv("MYSQL_AUTH_PLUGIN")  # e.g., caching_sha2_password
 
-pg_conn = psycopg2.connect(
-    dbname=pg_db,
-    user=pg_user,
-    password=pg_password,
-    host=pg_host,
-    port=pg_port
+mysql_conn = mysql.connector.connect(
+    host=mysql_host,
+    user=mysql_user,
+    password=mysql_password,
+    database=mysql_successfactors_db,
+    auth_plugin=mysql_auth_plugin
 )
-pg_cur = pg_conn.cursor()
+mysql_cur = mysql_conn.cursor()
 
 # Retrieve all EmployeeIDs from SuccessFactorsDB
-pg_cur.execute("SELECT EmployeeID FROM Employee;")
-employee_rows = pg_cur.fetchall()
-pg_cur.close()
-pg_conn.close()
+mysql_cur.execute("SELECT EmployeeID FROM Employee;")
+employee_rows = mysql_cur.fetchall()
+mysql_cur.close()
+mysql_conn.close()
 
 employee_ids = [row[0] for row in employee_rows]
 if not employee_ids:

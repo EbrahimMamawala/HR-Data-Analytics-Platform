@@ -46,7 +46,7 @@ try:
         host=os.getenv("MYSQL_HOST"),
         user=os.getenv("MYSQL_USER"),
         password=os.getenv("MYSQL_PASSWORD"),
-        database=os.getenv("MYSQL_DATABASE"),
+        database=os.getenv("MYSQL_TIMEATTENDANCE_DATABASE"),
         auth_plugin=os.getenv("MYSQL_AUTH_PLUGIN")
     )
     if not mysql_conn.is_connected():
@@ -59,8 +59,6 @@ app = FastAPI(title="Time and Attendance API")
 # -----------------------------------------------------------------
 # Pydantic Models
 # -----------------------------------------------------------------
-
-# AttendanceRecords Model
 class AttendanceRecord(BaseModel):
     RecordID: Optional[int] = None
     EmployeeID: int
@@ -74,7 +72,6 @@ class AttendanceRecord(BaseModel):
     CreatedAt: Optional[datetime] = None
     UpdatedAt: Optional[datetime] = None
 
-# LeaveRecords Model
 class LeaveRecord(BaseModel):
     LeaveID: Optional[int] = None
     EmployeeID: int
@@ -87,7 +84,6 @@ class LeaveRecord(BaseModel):
     ApprovedBy: Optional[int] = None
     CreatedAt: Optional[datetime] = None
 
-# ShiftSchedules Model
 class ShiftSchedule(BaseModel):
     ScheduleID: Optional[int] = None
     EmployeeID: int
@@ -97,7 +93,6 @@ class ShiftSchedule(BaseModel):
     ShiftType: Optional[str] = None
     CreatedAt: Optional[datetime] = None
 
-# OvertimeRecords Model
 class OvertimeRecord(BaseModel):
     OvertimeID: Optional[int] = None
     EmployeeID: int
@@ -111,7 +106,6 @@ class OvertimeRecord(BaseModel):
 # -----------------------------------------------------------------
 @app.post("/token", response_model=dict)
 def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    # Fake user authentication. Replace with your own authentication logic.
     fake_users_db = {os.getenv("ADMIN_USERNAME"): os.getenv("ADMIN_PASSWORD")}
     if form_data.username in fake_users_db and fake_users_db[form_data.username] == form_data.password:
         access_token = create_access_token({"sub": form_data.username}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
@@ -128,6 +122,31 @@ def get_cursor():
         raise HTTPException(status_code=500, detail=str(e))
 
 # -----------------------------------------------------------------
+# Helper Functions to Convert Timedelta to Time or String
+# -----------------------------------------------------------------
+def timedelta_to_time(td: timedelta) -> time:
+    total_seconds = int(td.total_seconds())
+    hours = (total_seconds // 3600) % 24
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return time(hour=hours, minute=minutes, second=seconds)
+
+def timedelta_to_str(td: timedelta) -> str:
+    t = timedelta_to_time(td)
+    return t.strftime("%H:%M:%S")
+
+def transform_attendance_record(record: dict) -> dict:
+    # Convert timedeltas to the expected types
+    if isinstance(record.get("ClockIn"), timedelta):
+        record["ClockIn"] = timedelta_to_time(record["ClockIn"])
+    if isinstance(record.get("ClockOut"), timedelta):
+        record["ClockOut"] = timedelta_to_time(record["ClockOut"])
+    for field in ["BreakDuration", "LateBy", "EarlyBy"]:
+        if isinstance(record.get(field), timedelta):
+            record[field] = timedelta_to_str(record[field])
+    return record
+
+# -----------------------------------------------------------------
 # AttendanceRecords Endpoints
 # -----------------------------------------------------------------
 @app.get("/attendance", response_model=List[AttendanceRecord])
@@ -137,7 +156,9 @@ def get_attendance_records(user: str = Depends(get_current_user)):
     cursor.execute(query)
     records = cursor.fetchall()
     cursor.close()
-    return records
+    # Transform each record if needed
+    transformed = [transform_attendance_record(r) for r in records]
+    return transformed
 
 @app.get("/attendance/{record_id}", response_model=AttendanceRecord)
 def get_attendance_record(record_id: int, user: str = Depends(get_current_user)):
@@ -148,7 +169,7 @@ def get_attendance_record(record_id: int, user: str = Depends(get_current_user))
     cursor.close()
     if not record:
         raise HTTPException(status_code=404, detail="Attendance record not found")
-    return record
+    return transform_attendance_record(record)
 
 @app.post("/attendance", response_model=AttendanceRecord)
 def create_attendance_record(record: AttendanceRecord, user: str = Depends(get_current_user)):

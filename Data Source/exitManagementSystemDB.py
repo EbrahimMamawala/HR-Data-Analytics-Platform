@@ -3,7 +3,7 @@ import uuid
 import json
 import random
 import datetime
-import psycopg2
+import mysql.connector
 from cassandra.cluster import Cluster
 from faker import Faker
 from dotenv import load_dotenv
@@ -12,32 +12,35 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # -----------------------------------------------------------------
-# 1. Connect to Postgres (SuccessFactorsDB) to fetch Terminated Employees
+# 1. Connect to MySQL (SuccessFactorsDB) to fetch Terminated Employees
 # -----------------------------------------------------------------
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_SUCCESSFACTORS_DATABASE = os.getenv("MYSQL_SUCCESSFACTORS_DATABASE")
+MYSQL_AUTH_PLUGIN = os.getenv("MYSQL_AUTH_PLUGIN")  # e.g., caching_sha2_password
 
-pg_conn = psycopg2.connect(
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    host=DB_HOST,
+# Connect to MySQL using the SuccessFactorsDB database
+mysql_conn = mysql.connector.connect(
+    host=MYSQL_HOST,
+    user=MYSQL_USER,
+    password=MYSQL_PASSWORD,
+    database=MYSQL_SUCCESSFACTORS_DATABASE,
+    auth_plugin=MYSQL_AUTH_PLUGIN
 )
-pg_cur = pg_conn.cursor()
+mysql_cur = mysql_conn.cursor()
 
 # Fetch employees who are terminated (with a non-null TerminationDate)
-pg_cur.execute("""
+mysql_cur.execute("""
     SELECT E.EmployeeID, ED.TerminationDate
     FROM EmploymentDetails ED
     JOIN Employee E ON E.EmployeeID = ED.EmployeeID
     WHERE ED.EmploymentStatus = 'Terminated'
       AND ED.TerminationDate IS NOT NULL
 """)
-terminated_rows = pg_cur.fetchall()
-pg_cur.close()
-pg_conn.close()
+terminated_rows = mysql_cur.fetchall()
+mysql_cur.close()
+mysql_conn.close()
 
 terminated_employees = []
 for row in terminated_rows:
@@ -57,7 +60,7 @@ print(f"Found {len(terminated_employees)} terminated employees in SuccessFactors
 # 2. Connect to Cassandra and Create Keyspace + Tables
 # -----------------------------------------------------------------
 # Load Cassandra connection settings from environment variables
-cassandra_hosts = os.getenv("CASSANDRA_HOSTS").split(",")
+cassandra_hosts = os.getenv("CASSANDRA_HOST").split(",")
 cassandra_port = int(os.getenv("CASSANDRA_PORT"))
 
 cluster = Cluster(cassandra_hosts, port=cassandra_port)
@@ -173,7 +176,7 @@ resignation_reasons = [
     "Work-life balance",
     "Health issues"
 ]
-resignation_statuses = ["Pending", "Approved", "Rejected"]
+resignation_statuses = ["Pending", "Approved"]
 
 # Sample exit tasks
 exit_tasks = [
@@ -284,3 +287,5 @@ print("Data inserted successfully into ExitManagementDB in Cassandra!")
 session.shutdown()
 cluster.shutdown()
 print("Cassandra session closed.")
+mysql_conn.close()
+print("MySQL connection closed.")

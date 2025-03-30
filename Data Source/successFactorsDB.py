@@ -1,6 +1,6 @@
 import os
-import psycopg2
-import psycopg2.extras
+import mysql.connector
+from mysql.connector import errorcode
 from faker import Faker
 import random
 import datetime
@@ -12,28 +12,40 @@ load_dotenv()
 # ------------------------------------------------------------
 # 1. Database connection parameters from environment
 # ------------------------------------------------------------
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD") 
-DB_HOST = os.getenv("DB_HOST")
-PG_PORT = os.getenv("PG_PORT") 
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_DATABASE = os.getenv("MYSQL_SUCCESSFACTORS_DATABASE")
+MYSQL_AUTH_PLUGIN = os.getenv("MYSQL_AUTH_PLUGIN")  
 
-# Connect to the database
-conn = psycopg2.connect(
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    host=DB_HOST,
-    port=PG_PORT
-)
-cur = conn.cursor()
+try:
+    # Connect without specifying a database first
+    conn = mysql.connector.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        auth_plugin=MYSQL_AUTH_PLUGIN
+    )
+    cur = conn.cursor()
 
+    # Create the database if it doesn't exist
+    cur.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DATABASE};")
+    cur.execute(f"USE {MYSQL_DATABASE};")
+
+except mysql.connector.Error as err:
+    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+        print("Something is wrong with your user name or password")
+    elif err.errno == errorcode.ER_BAD_DB_ERROR:
+        print("Database does not exist")
+    else:
+        print(err)
+    exit(1)
 # ------------------------------------------------------------
 # 2. Create Tables (if they don't already exist)
 # ------------------------------------------------------------
 employee_table_sql = """
 CREATE TABLE IF NOT EXISTS Employee (
-    EmployeeID INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    EmployeeID INT AUTO_INCREMENT PRIMARY KEY,
     EmployeeNumber VARCHAR(50) NOT NULL,
     FirstName VARCHAR(100) NOT NULL,
     LastName VARCHAR(100) NOT NULL,
@@ -48,49 +60,55 @@ CREATE TABLE IF NOT EXISTS Employee (
     Address TEXT,
     PhotoURL TEXT,
     CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
 """
 
 employment_details_sql = """
 CREATE TABLE IF NOT EXISTS EmploymentDetails (
-    EmployeeID INT PRIMARY KEY REFERENCES Employee(EmployeeID) ON DELETE CASCADE,
+    EmployeeID INT PRIMARY KEY,
     JobTitle VARCHAR(100) NOT NULL,
     Department VARCHAR(100),
     BusinessUnit VARCHAR(100),
-    ManagerID INT REFERENCES Employee(EmployeeID) ON DELETE SET NULL,
+    ManagerID INT,
     JobCode VARCHAR(50),
     EmploymentType VARCHAR(50),
     HireDate DATE,
     TerminationDate DATE,
-    EmploymentStatus VARCHAR(50)
-);
+    EmploymentStatus VARCHAR(50),
+    TerminationType VARCHAR(50),
+    CONSTRAINT fk_emp FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID) ON DELETE CASCADE,
+    CONSTRAINT fk_mgr FOREIGN KEY (ManagerID) REFERENCES Employee(EmployeeID) ON DELETE SET NULL
+) ENGINE=InnoDB;
 """
 
 compensation_sql = """
 CREATE TABLE IF NOT EXISTS Compensation (
-    EmployeeID INT PRIMARY KEY REFERENCES Employee(EmployeeID) ON DELETE CASCADE,
-    BaseSalary NUMERIC(12,2),
+    EmployeeID INT PRIMARY KEY,
+    BaseSalary DECIMAL(12,2),
     Currency VARCHAR(10),
     SalaryFrequency VARCHAR(20),
     LastSalaryChange DATE,
     BonusEligibility BOOLEAN,
-    VariablePay NUMERIC(12,2),
-    StockOptions INT
-);
+    VariablePay DECIMAL(12,2),
+    StockOptions INT,
+    CONSTRAINT fk_emp_comp FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID) ON DELETE CASCADE
+) ENGINE=InnoDB;
 """
 
 performance_sql = """
 CREATE TABLE IF NOT EXISTS Performance (
-    EmployeeID INT REFERENCES Employee(EmployeeID) ON DELETE CASCADE,
+    EmployeeID INT,
     PerformanceYear INT,
-    PerformanceRating INT CHECK (PerformanceRating BETWEEN 1 AND 5),
+    PerformanceRating INT,
     ManagerFeedback TEXT,
     TrainingCompleted TEXT,
     SkillsDeveloped TEXT,
     PromotionIndicator BOOLEAN,
-    PRIMARY KEY (EmployeeID, PerformanceYear)
-);
+    PRIMARY KEY (EmployeeID, PerformanceYear),
+    CONSTRAINT fk_emp_perf FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID) ON DELETE CASCADE,
+    CHECK (PerformanceRating BETWEEN 1 AND 5)
+) ENGINE=InnoDB;
 """
 
 cur.execute(employee_table_sql)
@@ -102,23 +120,23 @@ conn.commit()
 # ------------------------------------------------------------
 # 3. Delete Existing Data
 # ------------------------------------------------------------
-# Truncate all tables, restarting identity counters and cascading to dependent tables.
-truncate_sql = """
-TRUNCATE TABLE Performance, Compensation, EmploymentDetails, Employee RESTART IDENTITY CASCADE;
-"""
-cur.execute(truncate_sql)
+# Disable foreign key checks, truncate tables individually, then re-enable foreign key checks.
+cur.execute("SET FOREIGN_KEY_CHECKS=0;")
+tables_to_truncate = ["Performance", "Compensation", "EmploymentDetails", "Employee"]
+for table in tables_to_truncate:
+    cur.execute(f"TRUNCATE TABLE {table};")
+cur.execute("SET FOREIGN_KEY_CHECKS=1;")
 conn.commit()
 
 # ------------------------------------------------------------
 # 4. Generate Data for 10,000 Employees and Related Tables
 # ------------------------------------------------------------
-# Initialize Faker with Indian locale
 fake = Faker('en_IN')
 num_employees = 10000
 today = datetime.date.today()
 
 # Lists to accumulate bulk data
-employee_data = []         # For Employee table
+employee_data = []         # For Employee table; keep full tuple to later retrieve DateOfBirth
 employment_data = []       # For EmploymentDetails table
 compensation_data = []     # For Compensation table
 performance_data = []      # For Performance table
@@ -130,6 +148,7 @@ employment_types = ["Full-time", "Part-time", "Contractor", "Intern"]
 job_titles = ["Intern", "Junior Developer", "Senior Developer", "Manager", "Director", "Analyst", "Consultant"]
 departments = ["IT", "HR", "Finance", "Sales", "Marketing", "Operations"]
 business_units = ["North India", "South India", "East India", "West India", "Central India"]
+termination_types = ["Resigned", "Fired"]
 
 # Salary ranges in INR (monthly)
 salary_ranges = {
@@ -151,7 +170,6 @@ for i in range(num_employees):
     preferred_name = first_name
     gender = random.choice(genders)
     dob = fake.date_of_birth(minimum_age=18, maximum_age=65)
-    # Force nationality to "Indian"
     nationality = "Indian"
     marital_status = random.choice(marital_statuses)
     email = fake.unique.email()
@@ -167,21 +185,21 @@ for i in range(num_employees):
         address, photo_url, created_at, updated_at
     ))
 
+# MySQL insert for Employee table
 employee_insert_query = """
 INSERT INTO Employee 
 (EmployeeNumber, FirstName, LastName, MiddleName, PreferredName, Gender, DateOfBirth, Nationality, MaritalStatus, Email, ContactNumber, Address, PhotoURL, CreatedAt, UpdatedAt)
-VALUES %s
-RETURNING EmployeeID, DateOfBirth;
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
 """
-# Use a single batch to ensure all EmployeeIDs are returned
-psycopg2.extras.execute_values(cur, employee_insert_query, employee_data, page_size=num_employees)
-employee_results = cur.fetchall()
+cur.executemany(employee_insert_query, employee_data)
 conn.commit()
 
-# Build a dictionary to store each employee's DateOfBirth (for later use)
+# Since the table was truncated, auto-increment starts at 1.
+# We assume the inserted rows get sequential EmployeeIDs from 1 to num_employees.
 employee_info = {}
-for row in employee_results:
-    emp_id, dob = row
+for idx, data in enumerate(employee_data):
+    emp_id = idx + 1
+    dob = data[6]  # the 7th element is DateOfBirth
     employee_info[emp_id] = {"dob": dob}
 
 employee_ids = list(employee_info.keys())
@@ -189,7 +207,6 @@ employee_ids = list(employee_info.keys())
 # Generate data for EmploymentDetails, Compensation, and Performance tables for each employee
 for emp_id in employee_ids:
     dob = employee_info[emp_id]["dob"]
-    # Earliest hire date is when the employee turned 18
     earliest_hire = datetime.date(dob.year + 18, 1, 1)
     hire_date = fake.date_between(start_date=earliest_hire, end_date=today)
     
@@ -200,7 +217,6 @@ for emp_id in employee_ids:
     job_title = random.choice(job_titles)
     department = random.choice(departments)
     business_unit = random.choice(business_units)
-    # For the very first employee or for higher roles, no manager is assigned.
     if emp_id == min(employee_ids) or job_title in ["Manager", "Director"]:
         manager_id = None
     else:
@@ -209,10 +225,11 @@ for emp_id in employee_ids:
     
     job_code = f"JC{random.randint(1000,9999)}"
     employment_type = random.choice(employment_types)
+    termination_type = random.choice(termination_types) if terminated else None
     
     employment_data.append((
         emp_id, job_title, department, business_unit, manager_id,
-        job_code, employment_type, hire_date, termination_date, employment_status
+        job_code, employment_type, hire_date, termination_date, employment_status, termination_type
     ))
     
     # Generate Compensation details based on job title salary range in INR
@@ -264,24 +281,24 @@ for emp_id in employee_ids:
 # ------------------------------------------------------------
 employment_insert_sql = """
 INSERT INTO EmploymentDetails 
-(EmployeeID, JobTitle, Department, BusinessUnit, ManagerID, JobCode, EmploymentType, HireDate, TerminationDate, EmploymentStatus)
-VALUES %s
+(EmployeeID, JobTitle, Department, BusinessUnit, ManagerID, JobCode, EmploymentType, HireDate, TerminationDate, EmploymentStatus, TerminationType)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
 """
-psycopg2.extras.execute_values(cur, employment_insert_sql, employment_data, page_size=len(employee_data))
+cur.executemany(employment_insert_sql, employment_data)
 
 compensation_insert_sql = """
 INSERT INTO Compensation 
 (EmployeeID, BaseSalary, Currency, SalaryFrequency, LastSalaryChange, BonusEligibility, VariablePay, StockOptions)
-VALUES %s
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
 """
-psycopg2.extras.execute_values(cur, compensation_insert_sql, compensation_data, page_size=len(employee_data))
+cur.executemany(compensation_insert_sql, compensation_data)
 
 performance_insert_sql = """
 INSERT INTO Performance 
 (EmployeeID, PerformanceYear, PerformanceRating, ManagerFeedback, TrainingCompleted, SkillsDeveloped, PromotionIndicator)
-VALUES %s
+VALUES (%s, %s, %s, %s, %s, %s, %s);
 """
-psycopg2.extras.execute_values(cur, performance_insert_sql, performance_data, page_size=len(employee_data))
+cur.executemany(performance_insert_sql, performance_data)
 
 conn.commit()
 cur.close()
