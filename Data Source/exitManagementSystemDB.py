@@ -3,10 +3,15 @@ import uuid
 import json
 import random
 import datetime
+from datetime import date, datetime, timedelta  # Ensure this is at the top
 import mysql.connector
-from cassandra.cluster import Cluster
 from faker import Faker
 from dotenv import load_dotenv
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("exitManagementSystemDB")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -20,155 +25,134 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_SUCCESSFACTORS_DATABASE = os.getenv("MYSQL_SUCCESSFACTORS_DATABASE")
 MYSQL_AUTH_PLUGIN = os.getenv("MYSQL_AUTH_PLUGIN")  # e.g., caching_sha2_password
 
-# Connect to MySQL using the SuccessFactorsDB database
-mysql_conn = mysql.connector.connect(
-    host=MYSQL_HOST,
-    user=MYSQL_USER,
-    password=MYSQL_PASSWORD,
-    database=MYSQL_SUCCESSFACTORS_DATABASE,
-    auth_plugin=MYSQL_AUTH_PLUGIN
-)
-mysql_cur = mysql_conn.cursor()
+try:
+    sf_conn = mysql.connector.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_SUCCESSFACTORS_DATABASE,
+        auth_plugin=MYSQL_AUTH_PLUGIN
+    )
+except mysql.connector.Error as err:
+    raise Exception(f"Error connecting to SuccessFactorsDB: {err}")
 
-# Fetch employees who are terminated (with a non-null TerminationDate)
-mysql_cur.execute("""
+sf_cursor = sf_conn.cursor()
+sf_cursor.execute("""
     SELECT E.EmployeeID, ED.TerminationDate
     FROM EmploymentDetails ED
     JOIN Employee E ON E.EmployeeID = ED.EmployeeID
     WHERE ED.EmploymentStatus = 'Terminated'
       AND ED.TerminationDate IS NOT NULL
 """)
-terminated_rows = mysql_cur.fetchall()
-mysql_cur.close()
-mysql_conn.close()
+terminated_rows = sf_cursor.fetchall()
+sf_cursor.close()
+sf_conn.close()
 
 terminated_employees = []
 for row in terminated_rows:
     emp_id, term_date = row
     terminated_employees.append({
         "EmployeeID": emp_id,
-        "TerminationDate": term_date
+        "TerminationDate": term_date  # assumed to be a date object
     })
 
 if not terminated_employees:
-    print("No terminated employees found in SuccessFactorsDB. Exiting.")
+    logger.info("No terminated employees found in SuccessFactorsDB. Exiting.")
     exit(0)
 
-print(f"Found {len(terminated_employees)} terminated employees in SuccessFactorsDB.")
+logger.info(f"Found {len(terminated_employees)} terminated employees in SuccessFactorsDB.")
 
 # -----------------------------------------------------------------
-# 2. Connect to Cassandra and Create Keyspace + Tables
+# 2. Connect to MySQL (ExitManagementDB) and Create Tables
 # -----------------------------------------------------------------
-# Load Cassandra connection settings from environment variables
-cassandra_hosts = os.getenv("CASSANDRA_HOST").split(",")
-cassandra_port = int(os.getenv("CASSANDRA_PORT"))
+MYSQL_EXIT_DB = os.getenv("MYSQL_EXITMANAGEMENT_DATABASE")
 
-cluster = Cluster(cassandra_hosts, port=cassandra_port)
-session = cluster.connect()
+try:
+    # Connect without specifying a database so we can create it if needed
+    exit_conn = mysql.connector.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        auth_plugin=MYSQL_AUTH_PLUGIN
+    )
+    exit_cursor = exit_conn.cursor()
+    exit_cursor.execute(f"CREATE DATABASE IF NOT EXISTS {MYSQL_EXIT_DB};")
+    exit_conn.commit()
+    # Switch to the ExitManagementDB
+    exit_conn.database = MYSQL_EXIT_DB
+except mysql.connector.Error as err:
+    raise Exception(f"Error connecting to ExitManagementDB: {err}")
 
-# Create Keyspace (simple replication strategy for local testing)
-session.execute("""
-    CREATE KEYSPACE IF NOT EXISTS ExitManagementDB
-    WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};
-""")
+# Optionally drop existing tables to start fresh
+tables = ["ResignationRequests", "ExitInterviews", "ExitChecklists", "ExitSurveys"]
+for tbl in tables:
+    exit_cursor.execute(f"DROP TABLE IF EXISTS {tbl};")
 
-# Switch to the new keyspace
-session.set_keyspace("exitmanagementdb")
-
-# Drop tables if you want a clean slate (optional)
-session.execute("DROP TABLE IF EXISTS ResignationRequests;")
-session.execute("DROP TABLE IF EXISTS ExitInterviews;")
-session.execute("DROP TABLE IF EXISTS ExitChecklists;")
-session.execute("DROP TABLE IF EXISTS ExitSurveys;")
-
-# Create tables in Cassandra
-session.execute("""
+# Create ResignationRequests table
+exit_cursor.execute("""
     CREATE TABLE IF NOT EXISTS ResignationRequests (
-        RequestID uuid PRIMARY KEY,
-        EmployeeID int,
-        NoticeDate date,
-        EffectiveDate date,
-        Reason text,
-        Status text,
-        ApprovedBy int,
-        Comments text,
-        CreatedAt timestamp
+        RequestID CHAR(36) PRIMARY KEY,
+        EmployeeID INT,
+        NoticeDate DATE,
+        EffectiveDate DATE,
+        Reason TEXT,
+        Status VARCHAR(50),
+        ApprovedBy INT,
+        Comments TEXT,
+        CreatedAt DATETIME
     );
 """)
 
-session.execute("""
+# Create ExitInterviews table
+exit_cursor.execute("""
     CREATE TABLE IF NOT EXISTS ExitInterviews (
-        InterviewID uuid PRIMARY KEY,
-        EmployeeID int,
-        Interviewer text,
-        ReasonForExit text,
-        Feedback text,
-        InterviewDate date,
-        CreatedAt timestamp
+        InterviewID CHAR(36) PRIMARY KEY,
+        EmployeeID INT,
+        Interviewer VARCHAR(255),
+        ReasonForExit TEXT,
+        Feedback TEXT,
+        InterviewDate DATE,
+        CreatedAt DATETIME
     );
 """)
 
-session.execute("""
+# Create ExitChecklists table
+exit_cursor.execute("""
     CREATE TABLE IF NOT EXISTS ExitChecklists (
-        ChecklistID uuid PRIMARY KEY,
-        EmployeeID int,
-        TaskCompleted boolean,
-        TaskDescription text,
-        CompletionDate date,
-        Comments text,
-        CreatedAt timestamp
+        ChecklistID CHAR(36) PRIMARY KEY,
+        EmployeeID INT,
+        TaskCompleted BOOLEAN,
+        TaskDescription TEXT,
+        CompletionDate DATE,
+        Comments TEXT,
+        CreatedAt DATETIME
     );
 """)
 
-session.execute("""
+# Create ExitSurveys table
+exit_cursor.execute("""
     CREATE TABLE IF NOT EXISTS ExitSurveys (
-        SurveyID uuid PRIMARY KEY,
-        EmployeeID int,
-        SurveyDate date,
-        QuestionsAnswers text,
-        OverallSatisfaction int,
-        Comments text,
-        CreatedAt timestamp
+        SurveyID CHAR(36) PRIMARY KEY,
+        EmployeeID INT,
+        SurveyDate DATE,
+        QuestionsAnswers TEXT,
+        OverallSatisfaction INT,
+        Comments TEXT,
+        CreatedAt DATETIME
     );
 """)
 
-print("Created keyspace and tables in Cassandra.")
+exit_conn.commit()
+logger.info("Created tables in ExitManagementDB.")
 
 # -----------------------------------------------------------------
 # 3. Generate and Insert Data for Each Terminated Employee
 # -----------------------------------------------------------------
 fake = Faker()
-now = datetime.datetime.now()
+now = datetime.utcnow()  # using UTC for consistency
 
-# Helper: pick a random manager from the same set of employees (for demonstration)
-def random_manager_id():
-    return random.choice(terminated_employees)["EmployeeID"]
-
-resignation_insert_cql = session.prepare("""
-    INSERT INTO ResignationRequests (
-        RequestID, EmployeeID, NoticeDate, EffectiveDate, Reason, Status, ApprovedBy, Comments, CreatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-""")
-
-exitinterview_insert_cql = session.prepare("""
-    INSERT INTO ExitInterviews (
-        InterviewID, EmployeeID, Interviewer, ReasonForExit, Feedback, InterviewDate, CreatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-""")
-
-exitchecklist_insert_cql = session.prepare("""
-    INSERT INTO ExitChecklists (
-        ChecklistID, EmployeeID, TaskCompleted, TaskDescription, CompletionDate, Comments, CreatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-""")
-
-exitsurvey_insert_cql = session.prepare("""
-    INSERT INTO ExitSurveys (
-        SurveyID, EmployeeID, SurveyDate, QuestionsAnswers, OverallSatisfaction, Comments, CreatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-""")
-
-# Sample data for resignation reasons and statuses
+# To simulate realistic exit management data,
+# we assume that realistic exit reasons and tasks are used.
 resignation_reasons = [
     "Personal reasons",
     "Relocation",
@@ -177,8 +161,6 @@ resignation_reasons = [
     "Health issues"
 ]
 resignation_statuses = ["Pending", "Approved"]
-
-# Sample exit tasks
 exit_tasks = [
     "Return company laptop",
     "Submit ID card",
@@ -186,70 +168,64 @@ exit_tasks = [
     "Handover pending work"
 ]
 
-for term_emp in terminated_employees:
+# We now use batches to improve performance.
+resignation_batch = []
+exit_interview_batch = []
+exit_checklist_batch = []
+exit_survey_batch = []
+
+progress_interval = 500
+total = len(terminated_employees)
+
+logger.info("Starting data generation for exit management records...")
+
+for idx, term_emp in enumerate(terminated_employees, start=1):
     emp_id = term_emp["EmployeeID"]
     termination_date = term_emp["TerminationDate"]
     
     # 3A. ResignationRequests
     if termination_date is not None:
         notice_days_before = random.randint(15, 30)
-        notice_date = termination_date - datetime.timedelta(days=notice_days_before)
+        notice_date = termination_date - timedelta(days=notice_days_before)
         effective_date = termination_date
     else:
         notice_date = fake.date_between(start_date="-60d", end_date="today")
-        effective_date = notice_date + datetime.timedelta(days=random.randint(15, 30))
-
+        effective_date = notice_date + timedelta(days=random.randint(15, 30))
     reason = random.choice(resignation_reasons)
-    status = random.choice(resignation_statuses)
-    approved_by = random_manager_id() if status == "Approved" else None
+    status_val = random.choice(resignation_statuses)
+    approved_by = random.choice(terminated_employees)["EmployeeID"] if status_val == "Approved" else None
     comments = fake.sentence(nb_words=8)
-
-    session.execute(resignation_insert_cql, [
-        uuid.uuid4(),            # RequestID
-        emp_id,                  # EmployeeID
-        notice_date,             # NoticeDate (date)
-        effective_date,          # EffectiveDate (date)
-        reason,                  # Reason (text)
-        status,                  # Status (text)
-        approved_by,             # ApprovedBy (int)
-        comments,                # Comments (text)
-        now                      # CreatedAt (timestamp)
-    ])
-
+    resignation_id = str(uuid.uuid4())
+    resignation_batch.append((
+        resignation_id, emp_id, notice_date, effective_date,
+        reason, status_val, approved_by, comments, now
+    ))
+    
     # 3B. ExitInterviews
     if termination_date is not None:
-        interview_date = termination_date - datetime.timedelta(days=5)
+        interview_date = termination_date - timedelta(days=5)
     else:
         interview_date = fake.date_between(start_date="-30d", end_date="today")
-
     interviewer = fake.name()
     feedback = fake.paragraph(nb_sentences=2)
-    session.execute(exitinterview_insert_cql, [
-        uuid.uuid4(),           # InterviewID
-        emp_id,                 # EmployeeID
-        interviewer,            # Interviewer (text)
-        reason,                 # ReasonForExit (text)
-        feedback,               # Feedback (text)
-        interview_date,         # InterviewDate (date)
-        now                     # CreatedAt (timestamp)
-    ])
-
+    interview_id = str(uuid.uuid4())
+    exit_interview_batch.append((
+        interview_id, emp_id, interviewer, reason,  # using same reason for simplicity
+        feedback, interview_date, now
+    ))
+    
     # 3C. ExitChecklists
     tasks_for_employee = random.sample(exit_tasks, k=random.randint(1, 2))
     for task in tasks_for_employee:
         completed = random.random() < 0.7
         completion_date = interview_date if completed else None
-        comments = fake.sentence(nb_words=6)
-        session.execute(exitchecklist_insert_cql, [
-            uuid.uuid4(),       # ChecklistID
-            emp_id,             # EmployeeID
-            completed,          # TaskCompleted (boolean)
-            task,               # TaskDescription (text)
-            completion_date,    # CompletionDate (date or None)
-            comments,           # Comments (text)
-            now                 # CreatedAt (timestamp)
-        ])
-
+        checklist_id = str(uuid.uuid4())
+        checklist_comments = fake.sentence(nb_words=6)
+        exit_checklist_batch.append((
+            checklist_id, emp_id, completed, task,
+            completion_date, checklist_comments, now
+        ))
+    
     # 3D. ExitSurveys
     qa_sample = {
         "Q1": "How would you rate your overall experience?",
@@ -261,31 +237,55 @@ for term_emp in terminated_employees:
         "Q2": fake.sentence(nb_words=5),
         "Q3": fake.sentence(nb_words=7)
     }
-    questions_answers = {
-        "questions": qa_sample,
-        "answers": answers
-    }
+    questions_answers = json.dumps({"questions": qa_sample, "answers": answers})
     overall_satisfaction = random.randint(1, 5)
     survey_comments = fake.paragraph(nb_sentences=1)
-    survey_date = termination_date or fake.date_between(start_date="-30d", end_date="today")
+    survey_date = termination_date if termination_date else fake.date_between(start_date="-30d", end_date="today")
+    survey_id = str(uuid.uuid4())
+    exit_survey_batch.append((
+        survey_id, emp_id, survey_date, questions_answers,
+        overall_satisfaction, survey_comments, now
+    ))
+    
+    if idx % progress_interval == 0:
+        logger.info(f"Processed {idx} / {total} terminated employees.")
 
-    session.execute(exitsurvey_insert_cql, [
-        uuid.uuid4(),                     # SurveyID
-        emp_id,                           # EmployeeID
-        survey_date,                      # SurveyDate (date)
-        json.dumps(questions_answers),    # QuestionsAnswers (text as JSON)
-        overall_satisfaction,             # OverallSatisfaction (int)
-        survey_comments,                  # Comments (text)
-        now                               # CreatedAt (timestamp)
-    ])
+# Bulk insert using executemany()
+resignation_insert_query = """
+INSERT INTO ResignationRequests 
+(RequestID, EmployeeID, NoticeDate, EffectiveDate, Reason, Status, ApprovedBy, Comments, CreatedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+"""
+exit_cursor.executemany(resignation_insert_query, resignation_batch)
 
-print("Data inserted successfully into ExitManagementDB in Cassandra!")
+exit_interview_insert_query = """
+INSERT INTO ExitInterviews 
+(InterviewID, EmployeeID, Interviewer, ReasonForExit, Feedback, InterviewDate, CreatedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+"""
+exit_cursor.executemany(exit_interview_insert_query, exit_interview_batch)
+
+exit_checklist_insert_query = """
+INSERT INTO ExitChecklists 
+(ChecklistID, EmployeeID, TaskCompleted, TaskDescription, CompletionDate, Comments, CreatedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+"""
+exit_cursor.executemany(exit_checklist_insert_query, exit_checklist_batch)
+
+exit_survey_insert_query = """
+INSERT INTO ExitSurveys 
+(SurveyID, EmployeeID, SurveyDate, QuestionsAnswers, OverallSatisfaction, Comments, CreatedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+"""
+exit_cursor.executemany(exit_survey_insert_query, exit_survey_batch)
+
+exit_conn.commit()
+logger.info("Data inserted successfully into ExitManagementDB in MySQL!")
 
 # -----------------------------------------------------------------
-# 4. Cleanup
+# Cleanup
 # -----------------------------------------------------------------
-session.shutdown()
-cluster.shutdown()
-print("Cassandra session closed.")
-mysql_conn.close()
-print("MySQL connection closed.")
+exit_cursor.close()
+exit_conn.close()
+
+logger.info("MySQL connection closed.")

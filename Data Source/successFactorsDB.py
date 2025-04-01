@@ -1,17 +1,19 @@
 import os
-import mysql.connector
-from mysql.connector import errorcode
-from faker import Faker
+import uuid
+import json
 import random
 import datetime
+from datetime import date, datetime, timedelta
+import mysql.connector
+from faker import Faker
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 # 1. Database connection parameters from environment
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
@@ -33,16 +35,12 @@ try:
     cur.execute(f"USE {MYSQL_DATABASE};")
 
 except mysql.connector.Error as err:
-    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
-        print("Something is wrong with your user name or password")
-    elif err.errno == errorcode.ER_BAD_DB_ERROR:
-        print("Database does not exist")
-    else:
-        print(err)
+    print(err)
     exit(1)
-# ------------------------------------------------------------
+
+# -----------------------------------------------------------------
 # 2. Create Tables (if they don't already exist)
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 employee_table_sql = """
 CREATE TABLE IF NOT EXISTS Employee (
     EmployeeID INT AUTO_INCREMENT PRIMARY KEY,
@@ -117,10 +115,9 @@ cur.execute(compensation_sql)
 cur.execute(performance_sql)
 conn.commit()
 
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 # 3. Delete Existing Data
-# ------------------------------------------------------------
-# Disable foreign key checks, truncate tables individually, then re-enable foreign key checks.
+# -----------------------------------------------------------------
 cur.execute("SET FOREIGN_KEY_CHECKS=0;")
 tables_to_truncate = ["Performance", "Compensation", "EmploymentDetails", "Employee"]
 for table in tables_to_truncate:
@@ -128,31 +125,30 @@ for table in tables_to_truncate:
 cur.execute("SET FOREIGN_KEY_CHECKS=1;")
 conn.commit()
 
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 # 4. Generate Data for 10,000 Employees and Related Tables
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 fake = Faker('en_IN')
 num_employees = 10000
-today = datetime.date.today()
+today = date.today()
 
-# Lists to accumulate bulk data
-employee_data = []         # For Employee table; keep full tuple to later retrieve DateOfBirth
-employment_data = []       # For EmploymentDetails table
-compensation_data = []     # For Compensation table
-performance_data = []      # For Performance table
+employee_data = []         # Employee table
+employment_data = []       # EmploymentDetails table
+compensation_data = []     # Compensation table
+performance_data = []      # Performance table
 
 # Pre-defined lists/choices
 genders = ["Male", "Female", "Other"]
 marital_statuses = ["Single", "Married", "Divorced", "Widowed"]
 employment_types = ["Full-time", "Part-time", "Contractor", "Intern"]
-job_titles = ["Intern", "Junior Developer", "Senior Developer", "Manager", "Director", "Analyst", "Consultant"]
+job_titles = ["Junior Developer", "Senior Developer", "Manager", "Director", "Analyst", "Consultant"]
+# Note: Removed "Intern" from main list to avoid skewing overall data.
 departments = ["IT", "HR", "Finance", "Sales", "Marketing", "Operations"]
 business_units = ["North India", "South India", "East India", "West India", "Central India"]
 termination_types = ["Resigned", "Fired"]
 
 # Salary ranges in INR (monthly)
 salary_ranges = {
-    "Intern": (10000, 25000),
     "Junior Developer": (30000, 60000),
     "Senior Developer": (70000, 150000),
     "Manager": (100000, 200000),
@@ -161,7 +157,34 @@ salary_ranges = {
     "Consultant": (50000, 120000)
 }
 
-# Generate data for Employee table
+# Helper: Generate hire date with steady growth starting from 2005.
+def generate_hire_date():
+    start_year = 2005
+    current_year = today.year
+    # To simulate growth, we use a weighted distribution that favors recent years.
+    # Use u in [0,1] and compute: factor = 1 - u^(1/2)
+    u = random.random()
+    factor = 1 - (u ** 0.5)  # This biases toward higher numbers (more recent years)
+    hire_year = int(start_year + (current_year - start_year) * factor)
+    # Determine start and end date for that year. For current year, use today as end.
+    start_date = date(hire_year, 1, 1)
+    end_date = today if hire_year == current_year else date(hire_year, 12, 31)
+    return fake.date_between_dates(date_start=start_date, date_end=end_date)
+
+# Helper: Generate Date of Birth ensuring employee is between 21 and 60 at time of hire.
+def generate_dob(hire_date):
+    # Employee must be at least 21 on hire_date and at most 60
+    min_birth_year = hire_date.year - 60
+    max_birth_year = hire_date.year - 21
+    # Generate a random birth year between min_birth_year and max_birth_year
+    birth_year = random.randint(min_birth_year, max_birth_year)
+    # Use Faker to generate a DOB within that year.
+    return fake.date_between_dates(
+        date_start=date(birth_year, 1, 1),
+        date_end=date(birth_year, 12, 31)
+    )
+
+# Generate Employee data
 for i in range(num_employees):
     employee_number = f"E{10000 + i}"
     first_name = fake.first_name()
@@ -169,15 +192,18 @@ for i in range(num_employees):
     middle_name = fake.first_name() if random.random() < 0.5 else None
     preferred_name = first_name
     gender = random.choice(genders)
-    dob = fake.date_of_birth(minimum_age=18, maximum_age=65)
+    # First, generate a realistic hire date
+    hire_date = generate_hire_date()
+    # Generate DOB ensuring age between 21 and 60 at hire time
+    dob = generate_dob(hire_date)
     nationality = "Indian"
     marital_status = random.choice(marital_statuses)
     email = fake.unique.email()
     contact_number = fake.phone_number()[:30]
     address = fake.address().replace("\n", ", ")
     photo_url = "http://example.in/photo.jpg"
-    created_at = datetime.datetime.now()
-    updated_at = datetime.datetime.now()
+    created_at = datetime.now()
+    updated_at = datetime.now()
     
     employee_data.append((
         employee_number, first_name, last_name, middle_name, preferred_name,
@@ -185,7 +211,6 @@ for i in range(num_employees):
         address, photo_url, created_at, updated_at
     ))
 
-# MySQL insert for Employee table
 employee_insert_query = """
 INSERT INTO Employee 
 (EmployeeNumber, FirstName, LastName, MiddleName, PreferredName, Gender, DateOfBirth, Nationality, MaritalStatus, Email, ContactNumber, Address, PhotoURL, CreatedAt, UpdatedAt)
@@ -194,24 +219,26 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
 cur.executemany(employee_insert_query, employee_data)
 conn.commit()
 
-# Since the table was truncated, auto-increment starts at 1.
-# We assume the inserted rows get sequential EmployeeIDs from 1 to num_employees.
+# Build a dictionary to capture each employee's DOB (for later use) assuming sequential EmployeeIDs.
 employee_info = {}
 for idx, data in enumerate(employee_data):
-    emp_id = idx + 1
-    dob = data[6]  # the 7th element is DateOfBirth
+    emp_id = idx + 1  # since table was truncated, EmployeeIDs are sequential starting at 1
+    dob = data[6]
     employee_info[emp_id] = {"dob": dob}
 
 employee_ids = list(employee_info.keys())
 
-# Generate data for EmploymentDetails, Compensation, and Performance tables for each employee
+# Generate EmploymentDetails, Compensation, and Performance for each employee.
 for emp_id in employee_ids:
     dob = employee_info[emp_id]["dob"]
-    earliest_hire = datetime.date(dob.year + 18, 1, 1)
-    hire_date = fake.date_between(start_date=earliest_hire, end_date=today)
+    # Hire date: generate using the same function for consistency.
+    hire_date = generate_hire_date()
     
-    terminated = random.random() < 0.1
-    termination_date = fake.date_between(start_date=hire_date, end_date=today) if terminated else None
+    # Attrition: probability increases with tenure.
+    years_since_hire = (today - hire_date).days / 365.25
+    attrition_prob = min(0.5, years_since_hire * 0.03)  # up to 50% chance overall
+    terminated = random.random() < attrition_prob
+    termination_date = fake.date_between_dates(date_start=hire_date, date_end=today) if terminated else None
     employment_status = "Terminated" if terminated else "Active"
     
     job_title = random.choice(job_titles)
@@ -232,12 +259,12 @@ for emp_id in employee_ids:
         job_code, employment_type, hire_date, termination_date, employment_status, termination_type
     ))
     
-    # Generate Compensation details based on job title salary range in INR
+    # Generate Compensation details based on job title salary range
     salary_min, salary_max = salary_ranges.get(job_title, (30000, 60000))
     base_salary = round(random.uniform(salary_min, salary_max), 2)
     currency = "INR"
     salary_frequency = "Monthly"
-    last_salary_change = fake.date_between(start_date=hire_date, end_date=today)
+    last_salary_change = fake.date_between_dates(date_start=hire_date, date_end=today)
     bonus_eligibility = True if employment_type == "Full-time" and random.random() < 0.7 else False
     variable_pay = round(base_salary * random.uniform(0.05, 0.15), 2)
     stock_options = random.randint(100, 1000) if job_title in ["Manager", "Director"] else 0
@@ -276,9 +303,9 @@ for emp_id in employee_ids:
         training_completed, skills_developed, promotion_indicator
     ))
 
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 # 5. Bulk Insert Data into EmploymentDetails, Compensation, and Performance
-# ------------------------------------------------------------
+# -----------------------------------------------------------------
 employment_insert_sql = """
 INSERT INTO EmploymentDetails 
 (EmployeeID, JobTitle, Department, BusinessUnit, ManagerID, JobCode, EmploymentType, HireDate, TerminationDate, EmploymentStatus, TerminationType)
@@ -304,4 +331,4 @@ conn.commit()
 cur.close()
 conn.close()
 
-print("Existing data deleted and new consistent, Indian-style data for 10,000 employees inserted successfully!")
+print("Existing data deleted and new realistic, steadily growing, Indian-style data for 10,000 employees inserted successfully!")

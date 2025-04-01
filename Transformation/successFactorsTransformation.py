@@ -10,7 +10,7 @@ load_dotenv()
 # 1. Configuration
 # -----------------------------------------------------------------
 # FastAPI (SuccessFactors API) base URL
-BASE_URL = os.getenv("BASE_URL")
+BASE_URL = os.getenv("SUCCESSFACTORS_URL")
 
 # Credentials for obtaining JWT token from /token
 API_USERNAME = os.getenv("ADMIN_USERNAME")
@@ -87,6 +87,10 @@ def main():
     client = pymongo.MongoClient(MONGO_URI)
     db = client[MONGO_DB]
     employees_coll = db[EMPLOYEES_COLLECTION]
+
+    # Clear the MongoDB collection before inserting new data
+    result = employees_coll.delete_many({})
+    print(f"Cleared MongoDB collection '{EMPLOYEES_COLLECTION}'. Deleted {result.deleted_count} documents.")
 
     # 3C. Fetch all employees
     employees_list = get_employees(token)

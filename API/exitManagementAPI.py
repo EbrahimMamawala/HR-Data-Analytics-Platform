@@ -1,25 +1,35 @@
 import os
 import uuid
+import logging
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
 from dotenv import load_dotenv
 load_dotenv()
-from fastapi import FastAPI, HTTPException, Depends
+
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
-from cassandra.cluster import Cluster
-from cassandra.query import dict_factory
-from pydantic import BaseModel
+import mysql.connector
+from mysql.connector import Error
+from pydantic import BaseModel, Field
+
+# -----------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("exitManagementAPI")
 
 # -----------------------------------------------------------------
 # JWT Configuration
 # -----------------------------------------------------------------
 SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
-
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is not set")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -27,35 +37,56 @@ def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
     expire = datetime.utcnow() + expires_delta
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    if isinstance(encoded_jwt, bytes):
+        return encoded_jwt.decode("utf-8")
+    return encoded_jwt
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = payload.get("sub")
-        if user is None:
+        username: str = payload.get("sub")
+        if username is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return user
+        return username
     except ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
     except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # -----------------------------------------------------------------
-# Cassandra Connection
+# MySQL Connection to ExitManagementDB
 # -----------------------------------------------------------------
-try:
-    cassandra_host = os.getenv("CASSANDRA_HOST")
-    cassandra_port = int(os.getenv("CASSANDRA_PORT"))
-    cluster = Cluster([cassandra_host], port=cassandra_port)
-    session = cluster.connect()
-    session.row_factory = dict_factory
-    session.set_keyspace(os.getenv("CASSANDRA_KEYSPACE"))
-except Exception as e:
-    raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_EXIT_DB = os.getenv("MYSQL_EXITMANAGEMENT_DATABASE")
+MYSQL_AUTH_PLUGIN = os.getenv("MYSQL_AUTH_PLUGIN")
+
+exit_conn = None
+
+def get_exit_connection():
+    global exit_conn
+    if exit_conn is None or not exit_conn.is_connected():
+        try:
+            exit_conn = mysql.connector.connect(
+                host=MYSQL_HOST,
+                user=MYSQL_USER,
+                password=MYSQL_PASSWORD,
+                database=MYSQL_EXIT_DB,
+                auth_plugin=MYSQL_AUTH_PLUGIN
+            )
+        except Error as err:
+            logger.error(f"Error connecting to ExitManagementDB: {err}")
+            raise HTTPException(status_code=500, detail=f"Error connecting to ExitManagementDB: {err}")
+    return exit_conn
+
+def get_exit_cursor():
+    conn = get_exit_connection()
+    return conn.cursor(dictionary=True)
 
 # -----------------------------------------------------------------
-# Pydantic Models
+# Pydantic Models (Field names exactly match DB columns)
 # -----------------------------------------------------------------
 class Token(BaseModel):
     access_token: str
@@ -70,7 +101,10 @@ class ResignationRequest(BaseModel):
     Status: str
     ApprovedBy: Optional[int] = None
     Comments: str
-    CreatedAt: datetime
+    CreatedAt: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        allow_population_by_field_name = True
 
 class ExitInterview(BaseModel):
     InterviewID: Optional[UUID] = None
@@ -79,7 +113,10 @@ class ExitInterview(BaseModel):
     ReasonForExit: str
     Feedback: str
     InterviewDate: date
-    CreatedAt: datetime
+    CreatedAt: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        allow_population_by_field_name = True
 
 class ExitChecklist(BaseModel):
     ChecklistID: Optional[UUID] = None
@@ -88,7 +125,10 @@ class ExitChecklist(BaseModel):
     TaskDescription: str
     CompletionDate: Optional[date] = None
     Comments: str
-    CreatedAt: datetime
+    CreatedAt: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        allow_population_by_field_name = True
 
 class ExitSurvey(BaseModel):
     SurveyID: Optional[UUID] = None
@@ -97,58 +137,109 @@ class ExitSurvey(BaseModel):
     QuestionsAnswers: str
     OverallSatisfaction: int
     Comments: str
-    CreatedAt: datetime
+    CreatedAt: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        allow_population_by_field_name = True
 
 # -----------------------------------------------------------------
 # FastAPI App
 # -----------------------------------------------------------------
 app = FastAPI(title="Exit Management API")
 
-# -----------------------------------------------------------------
-# Authentication Endpoints
-# -----------------------------------------------------------------
-@app.post("/token", response_model=Token)
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    fake_users_db = {"admin": "password"}
-    if form_data.username in fake_users_db and fake_users_db[form_data.username] == form_data.password:
-        access_token = create_access_token({"sub": form_data.username}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-        return {"access_token": access_token, "token_type": "bearer"}
-    raise HTTPException(status_code=401, detail="Incorrect username or password")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -----------------------------------------------------------------
-# Database Helper Functions
+# Startup & Shutdown Events
+# -----------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Application starting up")
+    get_exit_connection()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    global exit_conn
+    logger.info("Application shutting down")
+    if exit_conn and exit_conn.is_connected():
+        exit_conn.close()
+
+# -----------------------------------------------------------------
+# Database Helper Functions using MySQL
 # -----------------------------------------------------------------
 def fetch_all(query: str, params: tuple = ()):
     try:
-        rows = session.execute(query, params)
-        return list(rows)
+        cursor = get_exit_cursor()
+        logger.info(f"Executing query: {query} with params: {params}")
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+        logger.info(f"Query returned {len(result)} rows")
+        cursor.close()
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Database query failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
 def execute_query(query: str, params: tuple):
     try:
-        session.execute(query, params)
+        cursor = get_exit_cursor()
+        logger.info(f"Executing query: {query} with params: {params}")
+        cursor.execute(query, params)
+        get_exit_connection().commit()
+        cursor.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Database operation failed: {str(e)}", exc_info=True)
+        get_exit_connection().rollback()
+        raise HTTPException(status_code=500, detail=f"Database operation failed: {str(e)}")
+
+# -----------------------------------------------------------------
+# Authentication Endpoint (/token)
+# -----------------------------------------------------------------
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    fake_users_db = {"admin": "password"}
+    if form_data.username not in fake_users_db or fake_users_db[form_data.username] != form_data.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(
+        data={"sub": form_data.username},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
 # -----------------------------------------------------------------
 # ResignationRequests Endpoints
 # -----------------------------------------------------------------
 @app.get("/resignation_requests", response_model=List[ResignationRequest])
-def get_resignation_requests(user: str = Depends(get_current_user)):
-    return fetch_all("SELECT * FROM ResignationRequests;")
+async def get_resignation_requests(current_user: str = Depends(get_current_user)):
+    rows = fetch_all("SELECT * FROM ResignationRequests", ())
+    return rows
 
-@app.post("/resignation_requests", response_model=ResignationRequest)
-def create_resignation_request(request: ResignationRequest, user: str = Depends(get_current_user)):
+@app.post("/resignation_requests", response_model=ResignationRequest, status_code=status.HTTP_201_CREATED)
+async def create_resignation_request(request: ResignationRequest, current_user: str = Depends(get_current_user)):
     request_id = request.RequestID or uuid.uuid4()
-    execute_query("""
+    if not request.CreatedAt:
+        request.CreatedAt = datetime.utcnow()
+    execute_query(
+        """
         INSERT INTO ResignationRequests (
             RequestID, EmployeeID, NoticeDate, EffectiveDate, Reason, Status, ApprovedBy, Comments, CreatedAt
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (
-        request_id, request.EmployeeID, request.NoticeDate, request.EffectiveDate,
-        request.Reason, request.Status, request.ApprovedBy, request.Comments, request.CreatedAt
-    ))
+        """,
+        (
+            str(request_id), request.EmployeeID, request.NoticeDate, request.EffectiveDate,
+            request.Reason, request.Status, request.ApprovedBy, request.Comments, request.CreatedAt
+        )
+    )
     request.RequestID = request_id
     return request
 
@@ -156,20 +247,25 @@ def create_resignation_request(request: ResignationRequest, user: str = Depends(
 # ExitInterviews Endpoints
 # -----------------------------------------------------------------
 @app.get("/exit_interviews", response_model=List[ExitInterview])
-def get_exit_interviews(user: str = Depends(get_current_user)):
-    return fetch_all("SELECT * FROM ExitInterviews;")
+async def get_exit_interviews(current_user: str = Depends(get_current_user)):
+    return fetch_all("SELECT * FROM ExitInterviews", ())
 
-@app.post("/exit_interviews", response_model=ExitInterview)
-def create_exit_interview(interview: ExitInterview, user: str = Depends(get_current_user)):
+@app.post("/exit_interviews", response_model=ExitInterview, status_code=status.HTTP_201_CREATED)
+async def create_exit_interview(interview: ExitInterview, current_user: str = Depends(get_current_user)):
     interview_id = interview.InterviewID or uuid.uuid4()
-    execute_query("""
+    if not interview.CreatedAt:
+        interview.CreatedAt = datetime.utcnow()
+    execute_query(
+        """
         INSERT INTO ExitInterviews (
             InterviewID, EmployeeID, Interviewer, ReasonForExit, Feedback, InterviewDate, CreatedAt
         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (
-        interview_id, interview.EmployeeID, interview.Interviewer, interview.ReasonForExit,
-        interview.Feedback, interview.InterviewDate, interview.CreatedAt
-    ))
+        """,
+        (
+            str(interview_id), interview.EmployeeID, interview.Interviewer, interview.ReasonForExit,
+            interview.Feedback, interview.InterviewDate, interview.CreatedAt
+        )
+    )
     interview.InterviewID = interview_id
     return interview
 
@@ -177,20 +273,25 @@ def create_exit_interview(interview: ExitInterview, user: str = Depends(get_curr
 # ExitChecklists Endpoints
 # -----------------------------------------------------------------
 @app.get("/exit_checklists", response_model=List[ExitChecklist])
-def get_exit_checklists(user: str = Depends(get_current_user)):
-    return fetch_all("SELECT * FROM ExitChecklists;")
+async def get_exit_checklists(current_user: str = Depends(get_current_user)):
+    return fetch_all("SELECT * FROM ExitChecklists", ())
 
-@app.post("/exit_checklists", response_model=ExitChecklist)
-def create_exit_checklist(checklist: ExitChecklist, user: str = Depends(get_current_user)):
+@app.post("/exit_checklists", response_model=ExitChecklist, status_code=status.HTTP_201_CREATED)
+async def create_exit_checklist(checklist: ExitChecklist, current_user: str = Depends(get_current_user)):
     checklist_id = checklist.ChecklistID or uuid.uuid4()
-    execute_query("""
+    if not checklist.CreatedAt:
+        checklist.CreatedAt = datetime.utcnow()
+    execute_query(
+        """
         INSERT INTO ExitChecklists (
             ChecklistID, EmployeeID, TaskCompleted, TaskDescription, CompletionDate, Comments, CreatedAt
         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (
-        checklist_id, checklist.EmployeeID, checklist.TaskCompleted,
-        checklist.TaskDescription, checklist.CompletionDate, checklist.Comments, checklist.CreatedAt
-    ))
+        """,
+        (
+            str(checklist_id), checklist.EmployeeID, checklist.TaskCompleted, checklist.TaskDescription,
+            checklist.CompletionDate, checklist.Comments, checklist.CreatedAt
+        )
+    )
     checklist.ChecklistID = checklist_id
     return checklist
 
@@ -198,27 +299,24 @@ def create_exit_checklist(checklist: ExitChecklist, user: str = Depends(get_curr
 # ExitSurveys Endpoints
 # -----------------------------------------------------------------
 @app.get("/exit_surveys", response_model=List[ExitSurvey])
-def get_exit_surveys(user: str = Depends(get_current_user)):
-    return fetch_all("SELECT * FROM ExitSurveys;")
+async def get_exit_surveys(current_user: str = Depends(get_current_user)):
+    return fetch_all("SELECT * FROM ExitSurveys", ())
 
-@app.post("/exit_surveys", response_model=ExitSurvey)
-def create_exit_survey(survey: ExitSurvey, user: str = Depends(get_current_user)):
+@app.post("/exit_surveys", response_model=ExitSurvey, status_code=status.HTTP_201_CREATED)
+async def create_exit_survey(survey: ExitSurvey, current_user: str = Depends(get_current_user)):
     survey_id = survey.SurveyID or uuid.uuid4()
-    execute_query("""
+    if not survey.CreatedAt:
+        survey.CreatedAt = datetime.utcnow()
+    execute_query(
+        """
         INSERT INTO ExitSurveys (
             SurveyID, EmployeeID, SurveyDate, QuestionsAnswers, OverallSatisfaction, Comments, CreatedAt
         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (
-        survey_id, survey.EmployeeID, survey.SurveyDate, survey.QuestionsAnswers,
-        survey.OverallSatisfaction, survey.Comments, survey.CreatedAt
-    ))
+        """,
+        (
+            str(survey_id), survey.EmployeeID, survey.SurveyDate, survey.QuestionsAnswers,
+            survey.OverallSatisfaction, survey.Comments, survey.CreatedAt
+        )
+    )
     survey.SurveyID = survey_id
     return survey
-
-# -----------------------------------------------------------------
-# Shutdown Event Handler
-# -----------------------------------------------------------------
-@app.on_event("shutdown")
-def shutdown_event():
-    session.shutdown()
-    cluster.shutdown()
