@@ -1,50 +1,13 @@
 "use client"
 
-import type React from "react"
-
 import { useState } from "react"
-import { useSignIn } from "@clerk/nextjs"
-import { useRouter } from "next/navigation"
+import { SignIn, SignUp } from "@clerk/nextjs"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Building2 } from "lucide-react"
 
 export default function LoginPage() {
-  const { signIn, isLoaded, setActive } = useSignIn()
-  const router = useRouter()
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!isLoaded) return
-
-    try {
-      setIsLoading(true)
-      setError("")
-
-      const result = await signIn.create({
-        identifier: email,
-        password,
-      })
-
-      if (result.status === "complete") {
-        await setActive({ session: result.createdSessionId })
-        router.push("/dashboard")
-      } else {
-        setError("Something went wrong. Please try again.")
-      }
-    } catch (err: any) {
-      setError(err.errors?.[0]?.message || "Login failed. Please check your credentials.")
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  const [isSignUp, setIsSignUp] = useState(false)
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
@@ -55,52 +18,52 @@ export default function LoginPage() {
               <Building2 className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold text-center">HR Analytics Platform</CardTitle>
-          <CardDescription className="text-center">Enter your credentials to access your dashboard</CardDescription>
+          <CardTitle className="text-2xl font-bold text-center">
+            HR Analytics Platform
+          </CardTitle>
+          <CardDescription className="text-center">
+            {isSignUp ? "Create an account to access your dashboard" : "Enter your credentials to access your dashboard"}
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="name@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">Password</Label>
-                <Button variant="link" className="p-0 h-auto text-sm" type="button">
-                  Forgot Password?
-                </Button>
-              </div>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Signing in..." : "Sign In"}
-            </Button>
-          </form>
+          {isSignUp ? (
+            <SignUp
+              routing="hash"
+              appearance={{ elements: { rootBox: "rounded-lg shadow-lg" } }}
+            />
+          ) : (
+            <SignIn
+              routing="hash"
+              appearance={{ elements: { rootBox: "rounded-lg shadow-lg" } }}
+            />
+          )}
         </CardContent>
         <CardFooter className="flex justify-center">
-          <p className="text-sm text-muted-foreground">Don't have an account? Contact your administrator.</p>
+          {isSignUp ? (
+            <p className="text-sm text-muted-foreground">
+              Already have an account?{" "}
+              <Button
+                variant="link"
+                className="p-0 h-auto text-sm"
+                onClick={() => setIsSignUp(false)}
+              >
+                Sign In
+              </Button>
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Don't have an account?{" "}
+              <Button
+                variant="link"
+                className="p-0 h-auto text-sm"
+                onClick={() => setIsSignUp(true)}
+              >
+                Sign Up
+              </Button>
+            </p>
+          )}
         </CardFooter>
       </Card>
     </div>
   )
 }
-

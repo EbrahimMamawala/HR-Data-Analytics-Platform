@@ -1,6 +1,6 @@
 import type { Metadata } from "next"
 import { EmployeeDataTable } from "@/components/employees/employee-data-table"
-import { EmployeeFilters } from "@/components/employees/employee-filters"
+import { EmployeeDataTableWithFilters } from "@/components/employees/employee-filters";
 
 export const metadata: Metadata = {
   title: "Employee Data | HR Analytics Platform",
@@ -15,8 +15,8 @@ export default function EmployeesPage() {
         <p className="text-muted-foreground">View and analyze employee data across departments and demographics.</p>
       </div>
 
-      <EmployeeFilters />
-      <EmployeeDataTable />
+      <EmployeeDataTableWithFilters />
+      {/* <EmployeeDataTable /> */}
     </div>
   )
 }

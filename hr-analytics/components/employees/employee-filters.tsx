@@ -1,151 +1,316 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { Check, ChevronsUpDown, Filter } from "lucide-react"
+import * as React from "react";
+import useSWR from "swr";
+import {
+  ColumnDef,
+  flexRender,
+  useReactTable,
+  getCoreRowModel,
+  getPaginationRowModel,
+} from "@tanstack/react-table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 
-import { Button } from "@/components/ui/button"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { cn } from "@/lib/utils"
-import { Card, CardContent } from "@/components/ui/card"
-import { Label } from "@/components/ui/label"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
-import { Slider } from "@/components/ui/slider"
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
-const departments = [
-  { label: "All Departments", value: "all" },
-  { label: "Engineering", value: "engineering" },
-  { label: "Marketing", value: "marketing" },
-  { label: "Finance", value: "finance" },
-  { label: "HR", value: "hr" },
-  { label: "Product", value: "product" },
-  { label: "Design", value: "design" },
-  { label: "Sales", value: "sales" },
-  { label: "Customer Support", value: "support" },
-]
+// Helper functions to compute period strings
+function getMonthKey(dateStr: string): string {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}`;
+}
 
-export function EmployeeFilters() {
-  const [open, setOpen] = React.useState(false)
-  const [department, setDepartment] = React.useState(departments[0])
-  const [gender, setGender] = React.useState("all")
-  const [ageRange, setAgeRange] = React.useState([20, 60])
-  const [showFilters, setShowFilters] = React.useState(false)
+function getQuarterKey(dateStr: string): string {
+  const d = new Date(dateStr);
+  const quarter = Math.floor(d.getMonth() / 3) + 1;
+  return `${d.getFullYear()}-Q${quarter}`;
+}
+
+function getYearKey(dateStr: string): string {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}`;
+}
+
+type Employee = {
+  _id: string;
+  EmployeeID: number;
+  Age: number;
+  Department: string;
+  Email: string;
+  FirstName: string;
+  LastName: string;
+  Gender: string;
+  JoinDate: string; // ISO date string (e.g. "2016-08-14")
+  Position: string;
+  Status: string;
+};
+
+export function EmployeeDataTableWithFilters() {
+  const { data, error } = useSWR("/api/employees", fetcher);
+
+  // Frequency filter state
+  const [frequency, setFrequency] = React.useState<"month" | "quarter" | "year">("month");
+  const [selectedPeriod, setSelectedPeriod] = React.useState<string>("all");
+
+  // Additional filter states
+  const [departmentFilter, setDepartmentFilter] = React.useState<string>("all");
+  const [positionFilter, setPositionFilter] = React.useState<string>("all");
+  const [statusFilter, setStatusFilter] = React.useState<string>("all");
+
+  // Unique options for each filter
+  const [periodOptions, setPeriodOptions] = React.useState<string[]>([]);
+  const [departmentOptions, setDepartmentOptions] = React.useState<string[]>([]);
+  const [positionOptions, setPositionOptions] = React.useState<string[]>([]);
+  const [statusOptions, setStatusOptions] = React.useState<string[]>([]);
+
+  // Local state for filtered data
+  const [filteredData, setFilteredData] = React.useState<Employee[]>([]);
+
+  // Pagination state: show 100 rows per page
+  const [pageSize] = React.useState(100);
+
+  // Compute filter options when data loads or frequency changes
+  React.useEffect(() => {
+    if (data && Array.isArray(data)) {
+      const periodSet = new Set<string>();
+      const deptSet = new Set<string>();
+      const posSet = new Set<string>();
+      const statSet = new Set<string>();
+      data.forEach((emp: Employee) => {
+        if (emp.JoinDate) {
+          let key = "";
+          if (frequency === "month") key = getMonthKey(emp.JoinDate);
+          else if (frequency === "quarter") key = getQuarterKey(emp.JoinDate);
+          else if (frequency === "year") key = getYearKey(emp.JoinDate);
+          periodSet.add(key);
+        }
+        if (emp.Department) deptSet.add(emp.Department);
+        if (emp.Position) posSet.add(emp.Position);
+        if (emp.Status) statSet.add(emp.Status);
+      });
+      setPeriodOptions(Array.from(periodSet).sort());
+      setDepartmentOptions(["all", ...Array.from(deptSet).sort()]);
+      setPositionOptions(["all", ...Array.from(posSet).sort()]);
+      setStatusOptions(["all", ...Array.from(statSet).sort()]);
+      setSelectedPeriod("all");
+      setDepartmentFilter("all");
+      setPositionFilter("all");
+      setStatusFilter("all");
+      setFilteredData(data);
+    }
+  }, [data, frequency]);
+
+  // Function to apply filters
+  const applyFilters = () => {
+    if (!data) return;
+    let filtered = data;
+    // Frequency filter on join date
+    if (selectedPeriod !== "all") {
+      filtered = filtered.filter((emp: Employee) => {
+        if (!emp.JoinDate) return false;
+        let key = "";
+        if (frequency === "month") key = getMonthKey(emp.JoinDate);
+        else if (frequency === "quarter") key = getQuarterKey(emp.JoinDate);
+        else if (frequency === "year") key = getYearKey(emp.JoinDate);
+        return key === selectedPeriod;
+      });
+    }
+    // Department filter
+    if (departmentFilter !== "all") {
+      filtered = filtered.filter((emp: Employee) => emp.Department === departmentFilter);
+    }
+    // Position filter
+    if (positionFilter !== "all") {
+      filtered = filtered.filter((emp: Employee) => emp.Position === positionFilter);
+    }
+    // Status filter
+    if (statusFilter !== "all") {
+      filtered = filtered.filter((emp: Employee) => emp.Status === statusFilter);
+    }
+    setFilteredData(filtered);
+  };
+
+  // Define columns for the table
+  const columns: ColumnDef<Employee>[] = [
+    {
+      accessorKey: "FirstName",
+      header: "Name",
+      cell: ({ row }) => (
+        <div>
+          {row.original.FirstName} {row.original.LastName}
+        </div>
+      ),
+    },
+    { accessorKey: "Email", header: "Email" },
+    { accessorKey: "Department", header: "Department" },
+    { accessorKey: "Position", header: "Position" },
+    {
+      accessorKey: "Status",
+      header: "Status",
+      cell: ({ row }) => <Badge>{row.original.Status}</Badge>,
+    },
+    { accessorKey: "JoinDate", header: "Join Date" },
+    { accessorKey: "Gender", header: "Gender" },
+    { accessorKey: "Age", header: "Age" },
+  ];
+
+  const table = useReactTable({
+    data: filteredData,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    initialState: { pagination: { pageSize, pageIndex: 0 } },
+  });
+
+  if (error) return <div>Failed to load employee data</div>;
+  if (!data) return <div>Loading...</div>;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
-            <Button variant="outline" role="combobox" aria-expanded={open} className="w-[200px] justify-between">
-              {department.label}
-              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-[200px] p-0">
-            <Command>
-              <CommandInput placeholder="Search department..." />
-              <CommandList>
-                <CommandEmpty>No department found.</CommandEmpty>
-                <CommandGroup>
-                  {departments.map((dept) => (
-                    <CommandItem
-                      key={dept.value}
-                      value={dept.value}
-                      onSelect={() => {
-                        setDepartment(dept)
-                        setOpen(false)
-                      }}
-                    >
-                      <Check
-                        className={cn("mr-2 h-4 w-4", department.value === dept.value ? "opacity-100" : "opacity-0")}
-                      />
-                      {dept.label}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
-
-        <Button variant="outline" onClick={() => setShowFilters(!showFilters)} className="gap-2">
-          <Filter className="h-4 w-4" />
-          Filters
-        </Button>
+      {/* Filter Controls */}
+      <div className="flex flex-col gap-4">
+        <div className="flex gap-4 items-center">
+          <Label>Frequency:</Label>
+          <Select value={frequency} onValueChange={(value) => setFrequency(value as "month" | "quarter" | "year")}>
+            <SelectTrigger className="w-32">
+              <SelectValue placeholder="Select frequency" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="month">Month</SelectItem>
+              <SelectItem value="quarter">Quarter</SelectItem>
+              <SelectItem value="year">Year</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-4 items-center">
+          <Label>Period:</Label>
+          <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Select period" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              {periodOptions.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-4 items-center">
+          <Label>Department:</Label>
+          <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Select department" />
+            </SelectTrigger>
+            <SelectContent>
+              {departmentOptions.map((dept) => (
+                <SelectItem key={dept} value={dept}>
+                  {dept}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-4 items-center">
+          <Label>Position:</Label>
+          <Select value={positionFilter} onValueChange={setPositionFilter}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Select position" />
+            </SelectTrigger>
+            <SelectContent>
+              {positionOptions.map((pos) => (
+                <SelectItem key={pos} value={pos}>
+                  {pos}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-4 items-center">
+          <Label>Status:</Label>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Select status" />
+            </SelectTrigger>
+            <SelectContent>
+              {statusOptions.map((stat) => (
+                <SelectItem key={stat} value={stat}>
+                  {stat}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button onClick={applyFilters}>Apply Filters</Button>
       </div>
 
-      {showFilters && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-2">
-                <Label>Gender</Label>
-                <RadioGroup
-                  defaultValue="all"
-                  value={gender}
-                  onValueChange={setGender}
-                  className="flex flex-col space-y-1"
-                >
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="all" id="all" />
-                    <Label htmlFor="all">All</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="male" id="male" />
-                    <Label htmlFor="male">Male</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="female" id="female" />
-                    <Label htmlFor="female">Female</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="other" id="other" />
-                    <Label htmlFor="other">Other</Label>
-                  </div>
-                </RadioGroup>
-              </div>
+      {/* Employee Data Table */}
+      <div className="w-full border rounded-md">
+        <Table>
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map((header) =>
+                  header.isPlaceholder ? null : (
+                    <TableHead key={header.id}>
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                    </TableHead>
+                  )
+                )}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.length ? (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id}>
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="h-24 text-center">
+                  No results.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
 
-              <div className="space-y-2">
-                <Label>
-                  Age Range: {ageRange[0]} - {ageRange[1]}
-                </Label>
-                <Slider
-                  defaultValue={[20, 60]}
-                  value={ageRange}
-                  onValueChange={setAgeRange}
-                  min={18}
-                  max={70}
-                  step={1}
-                  className="py-4"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Status</Label>
-                <RadioGroup defaultValue="all" className="flex flex-col space-y-1">
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="all" id="status-all" />
-                    <Label htmlFor="status-all">All</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="active" id="status-active" />
-                    <Label htmlFor="status-active">Active</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="inactive" id="status-inactive" />
-                    <Label htmlFor="status-inactive">Inactive</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="on-leave" id="status-on-leave" />
-                    <Label htmlFor="status-on-leave">On Leave</Label>
-                  </div>
-                </RadioGroup>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Pagination Controls */}
+      <div className="flex items-center justify-between mt-4">
+        <Button onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}>
+          Previous
+        </Button>
+        <span>
+          Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+        </span>
+        <Button onClick={() => table.nextPage()} disabled={!table.getCanNextPage()}>
+          Next
+        </Button>
+      </div>
     </div>
-  )
+  );
 }
-

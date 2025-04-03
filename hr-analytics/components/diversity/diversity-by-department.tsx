@@ -1,57 +1,57 @@
 "use client"
 
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart"
 
-const data = [
-  {
-    department: "Engineering",
-    male: 120,
-    female: 80,
-    other: 10,
-  },
-  {
-    department: "Marketing",
-    male: 40,
-    female: 60,
-    other: 5,
-  },
-  {
-    department: "Finance",
-    male: 50,
-    female: 45,
-    other: 3,
-  },
-  {
-    department: "HR",
-    male: 15,
-    female: 35,
-    other: 2,
-  },
-  {
-    department: "Product",
-    male: 35,
-    female: 30,
-    other: 5,
-  },
-  {
-    department: "Design",
-    male: 25,
-    female: 35,
-    other: 8,
-  },
-  {
-    department: "Sales",
-    male: 70,
-    female: 50,
-    other: 5,
-  },
-]
+interface DiversityData {
+  _id: string;
+  diversity_by_department: { 
+    [department: string]: {
+      Male: number;
+      Female: number;
+      Other: number;
+    }
+  };
+}
 
-export function DiversityByDepartment() {
+interface DiversityByDepartmentProps {
+  period: string;
+  date: string;
+}
+
+export function DiversityByDepartment({ period, date }: DiversityByDepartmentProps) {
+  const [data, setData] = useState<DiversityData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const queryParams = new URLSearchParams();
+    queryParams.append("period", period);
+    if (date) queryParams.append("date", date);
+
+    fetch(`/api/diversity?${queryParams.toString()}`)
+      .then((res) => res.json())
+      .then((data: DiversityData) => {
+        setData(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [period, date]);
+
+  if (loading) return <div>Loading...</div>;
+  if (!data) return <div>No data available</div>;
+
+  // Transform MongoDB data to chart format
+  const chartData = Object.entries(data.diversity_by_department).map(([department, stats]) => ({
+    department,
+    male: stats.Male || 0,
+    female: stats.Female || 0,
+    other: stats.Other || 0
+  }));
+
   return (
-    <Card className="col-span-1">
+    <Card className="col-span-1 lg:col-span-2">
       <CardHeader>
         <CardTitle>Diversity by Department</CardTitle>
         <CardDescription>Gender distribution across departments</CardDescription>
@@ -72,20 +72,23 @@ export function DiversityByDepartment() {
               color: "hsl(var(--chart-3))",
             },
           }}
-          className="h-[400px]"
+          className="h-[500px] sm:h-[600px]"
         >
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
-              data={data}
+              data={chartData}
               margin={{
                 top: 20,
                 right: 30,
                 left: 20,
-                bottom: 5,
+                bottom: 70,
               }}
             >
               <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="department" className="text-sm text-muted-foreground" />
+              <XAxis 
+                dataKey="department" 
+                className="text-sm text-muted-foreground"
+              />
               <YAxis className="text-sm text-muted-foreground" />
               <Tooltip content={<ChartTooltipContent />} />
               <Legend />
@@ -97,6 +100,5 @@ export function DiversityByDepartment() {
         </ChartContainer>
       </CardContent>
     </Card>
-  )
+  );
 }
-

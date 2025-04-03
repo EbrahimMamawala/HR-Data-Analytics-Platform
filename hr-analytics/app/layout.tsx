@@ -16,7 +16,6 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata = {
   title: "HR Analytics Platform",
   description: "A modern HR analytics platform for employee data and attrition prediction",
-  generator: 'v0.dev'
 }
 
 export default function RootLayout({
