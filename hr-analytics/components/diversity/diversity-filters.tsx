@@ -21,7 +21,7 @@ export function DiversityFilters({ onFiltersChange }: DiversityFiltersProps) {
   const [selectedQuarter, setSelectedQuarter] = React.useState<string>("Q1");
 
   // Define options for years, months, and quarters.
-  const years = Array.from({ length: 16 }, (_, i) => String(2010 + i)); // 2010 to 2025
+  const years = Array.from({ length: 15 }, (_, i) => String(2010 + i)); // 2010 to 2025
   const months = [
     { value: "01", label: "January" },
     { value: "02", label: "February" },
