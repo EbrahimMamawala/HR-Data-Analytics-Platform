@@ -1,39 +1,29 @@
-"use client"
+'use client'
 
-import * as React from "react"
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { BarChart3, Users, TrendingUp, Home, Menu } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
-import { cn } from "@/lib/utils"
+import * as React from 'react'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { BarChart3, Users, TrendingUp, Home, Menu, CirclePlus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import { cn } from '@/lib/utils'
+import { useUser } from '@clerk/nextjs'
 
 const sidebarLinks = [
-  {
-    title: "Dashboard",
-    href: "/dashboard",
-    icon: Home,
-  },
-  {
-    title: "Employee Data",
-    href: "/dashboard/employees",
-    icon: Users,
-  },
-  {
-    title: "Diversity Analysis",
-    href: "/dashboard/diversity",
-    icon: BarChart3,
-  },
-  {
-    title: "Attrition Prediction",
-    href: "/dashboard/attrition",
-    icon: TrendingUp,
-  },
+  { title: 'Dashboard',           href: '/dashboard',               icon: Home },
+  { title: 'Employee Data',       href: '/dashboard/employees',     icon: Users },
+  { title: 'Diversity Analysis',  href: '/dashboard/diversity',     icon: BarChart3 },
+  { title: 'Attrition Prediction',href: '/dashboard/attrition',     icon: TrendingUp },
+  { title: 'Add Employee Data',   href: '/dashboard/addEmployeeData',icon: CirclePlus },
 ]
 
 export function MobileNav() {
   const pathname = usePathname()
   const [open, setOpen] = React.useState(false)
+  const { isLoaded, user } = useUser()
+
+  // only show HR link when user is loaded and role === 'hr'
+  const role = isLoaded ? user?.publicMetadata?.role : undefined
 
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -50,24 +40,35 @@ export function MobileNav() {
             <span className="text-lg font-semibold">HR Analytics</span>
           </div>
           <nav className="grid gap-2 py-4">
-            {sidebarLinks.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                onClick={() => setOpen(false)}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 transition-all hover:text-primary",
-                  pathname === link.href ? "bg-primary/10 text-primary" : "text-muted-foreground",
-                )}
-              >
-                <link.icon className="h-4 w-4" />
-                {link.title}
-              </Link>
-            ))}
+            {sidebarLinks.map((link) => {
+              // hide the Add Employee link unless role==='hr'
+              if (
+                link.href === '/dashboard/addEmployeeData' &&
+                role !== 'hr'
+              ) {
+                return null
+              }
+
+              return (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setOpen(false)}
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 transition-all hover:text-primary',
+                    pathname === link.href
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground'
+                  )}
+                >
+                  <link.icon className="h-4 w-4" />
+                  {link.title}
+                </Link>
+              )
+            })}
           </nav>
         </div>
       </SheetContent>
     </Sheet>
   )
 }
-
