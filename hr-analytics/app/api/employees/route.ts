@@ -46,22 +46,22 @@ export async function POST(request: NextRequest) {
       age: number
     }
 
-    if (
-      !firstName ||
-      !lastName ||
-      !email ||
-      !department ||
-      !position ||
-      !status ||
-      !joinDate ||
-      !gender ||
-      typeof age !== 'number'
-    ) {
-      return NextResponse.json(
-        { error: 'Missing or invalid fields' },
-        { status: 400 }
-      )
-    }
+    // if (
+    //   !firstName ||
+    //   !lastName ||
+    //   !email ||
+    //   !department ||
+    //   !position ||
+    //   !status ||
+    //   !joinDate ||
+    //   !gender ||
+    //   typeof age !== 'number'
+    // ) {
+    //   return NextResponse.json(
+    //     { error: 'Missing or invalid fields' },
+    //     { status: 400 }
+    //   )
+    // }
 
     // Use your connectToDatabase helper
     const { db } = await connectToDatabase()
